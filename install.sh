@@ -7,6 +7,23 @@ cd "$(dirname "$0")"
 
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 
+# Remediation for a broken / not-yet-initialised Xcode toolchain. Shows up as a
+# plugin-load failure pointing at a missing CoreSimulator.framework or a request
+# to run 'runFirstLaunch' — the build never even starts. It's the Mac's Xcode
+# install, not the app.
+xcode_repair_hint() {
+  bold "❌ Xcode couldn't load its build components."
+  echo "   This is a broken or not-yet-initialised Xcode install on this Mac —"
+  echo "   not a problem with the app. Run these, then re-run ./install.sh:"
+  echo ""
+  echo "     sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
+  echo "     sudo xcodebuild -runFirstLaunch"
+  echo "     sudo xcodebuild -license accept"
+  echo ""
+  echo "   If it still fails, reinstall Xcode from the App Store, then run"
+  echo "   'sudo xcodebuild -runFirstLaunch' again."
+}
+
 # 1. macOS 14+ (Sonoma) required — desktop widgets don't exist before that.
 MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 if [ "$MAJOR" -lt 14 ]; then
@@ -67,10 +84,22 @@ EOF
 fi
 
 bold "🔨 Building Claude Code Usage (Release) — first build takes 1-2 minutes …"
-/usr/bin/xcrun xcodebuild -project ClaudeUsage.xcodeproj -scheme ClaudeUsage \
+# Capture the build output so we can recognise a broken-Xcode failure and print
+# actionable steps instead of a raw plugin stack trace. `tee` keeps it live too.
+BUILD_LOG=$(mktemp)
+if ! /usr/bin/xcrun xcodebuild -project ClaudeUsage.xcodeproj -scheme ClaudeUsage \
   -configuration Release -derivedDataPath build -quiet \
   CODE_SIGN_IDENTITY="$CERT_NAME" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" \
-  OTHER_CODE_SIGN_FLAGS="--keychain $HOME/Library/Keychains/login.keychain-db" build
+  OTHER_CODE_SIGN_FLAGS="--keychain $HOME/Library/Keychains/login.keychain-db" build \
+  2>&1 | tee "$BUILD_LOG"; then
+  if grep -qE 'runFirstLaunch|CoreSimulator|DVTPlugInLoading' "$BUILD_LOG"; then
+    echo ""
+    xcode_repair_hint
+  fi
+  rm -f "$BUILD_LOG"
+  exit 1
+fi
+rm -f "$BUILD_LOG"
 
 APP="build/Build/Products/Release/Claude Usage.app"
 if [ ! -d "$APP" ]; then
