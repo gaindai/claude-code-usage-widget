@@ -4,12 +4,17 @@ import Foundation
 /// und aggregiert Tokens und Aktivität der letzten Tage.
 ///
 /// Zählregeln (empirisch gegen Claude Codes eigene /usage-Statistik verifiziert):
-/// - Tokens = input + output pro Assistant-Zeile, OHNE Dedupe, OHNE
-///   Sidechain-Nachrichten (Subagenten) — entspricht „Total tokens" in /usage.
-/// - Nachrichten = Assistant-Antworten, dedupliziert über message.id allein:
-///   Streaming schreibt mehrere Zeilen pro Antwort, und Subagenten-Protokolle
-///   spiegeln Eltern-Nachrichten unter NEUER Request-ID — eine zusammengesetzte
-///   ID (message.id + requestId) würde solche Spiegelungen doppelt zählen.
+/// - Tokens = input + output je Assistant-Antwort, dedupliziert über message.id,
+///   OHNE Sidechain-Nachrichten (Subagenten) — entspricht „Total tokens" in /usage.
+///   Claude Code schreibt eine Antwort als MEHRERE JSONL-Zeilen (eine pro
+///   Content-Block: Thinking, Text, jeder Tool-Use), alle mit derselben message.id
+///   und identischem kumulativem usage-Block; pro Zeile zu summieren zählte eine
+///   Antwort mit N Blöcken N-fach (~3× bei normaler Tool-Nutzung). Daher nur die
+///   erste Zeile je message.id verbuchen — die identische usage macht das exakt.
+/// - Nachrichten = Assistant-Antworten, ebenfalls über message.id allein
+///   dedupliziert: Subagenten-Protokolle spiegeln Eltern-Nachrichten unter NEUER
+///   Request-ID — eine zusammengesetzte ID (message.id + requestId) würde solche
+///   Spiegelungen doppelt zählen.
 /// - Cache-Tokens werden mitgeführt (Snapshot), aber nicht als „Tokens" angezeigt.
 ///
 /// Als actor: collect()-Aufrufe sind serialisiert und laufen automatisch
@@ -110,18 +115,25 @@ actor UsageCollector {
         for e in entries {
             let key = dayFormatter.string(from: e.date)
             guard var stat = stats[key] else { continue }
-            if !e.isSidechain {
-                stat.inputTokens += e.input
-                stat.outputTokens += e.output
-                stat.cacheReadTokens += e.cacheRead
-                stat.cacheWriteTokens += e.cacheWrite
-            }
+            // Erste Begegnung dieser message.id? Tokens, Cache UND messageCount
+            // ausschließlich beim ersten Auftreten verbuchen — eine Antwort mit
+            // mehreren Content-Blöcken erscheint als mehrere Zeilen gleicher
+            // message.id mit identischem usage-Block; jede zu summieren blähte
+            // die Tokens auf (siehe Zählregeln im Header). Ohne message.id
+            // (alte Logs) jede Zeile zählen.
+            let firstSeen: Bool
             if let dedupeKey = e.dedupeKey {
-                if !seenMessages.contains(dedupeKey) {
-                    seenMessages.insert(dedupeKey)
-                    stat.messageCount += 1
-                }
+                firstSeen = seenMessages.insert(dedupeKey).inserted
             } else {
+                firstSeen = true
+            }
+            if firstSeen {
+                if !e.isSidechain {
+                    stat.inputTokens += e.input
+                    stat.outputTokens += e.output
+                    stat.cacheReadTokens += e.cacheRead
+                    stat.cacheWriteTokens += e.cacheWrite
+                }
                 stat.messageCount += 1
             }
             if let sid = e.sessionId {
