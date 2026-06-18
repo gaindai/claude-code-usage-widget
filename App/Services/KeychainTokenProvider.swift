@@ -9,6 +9,7 @@ enum KeychainTokenProvider {
     enum TokenError: LocalizedError {
         case notFound
         case accessDenied(OSStatus)
+        case canceled(OSStatus)
         case interactionRequired
         case parseFailed
 
@@ -18,6 +19,8 @@ enum KeychainTokenProvider {
                 return "No Claude Code login found. Run `claude` in a terminal once and log in."
             case .accessDenied(let status):
                 return "Keychain access denied (status \(status))."
+            case .canceled:
+                return "Keychain access was canceled — reconnect to retry."
             case .interactionRequired:
                 return "Reconnect to read the Claude Code token from the keychain."
             case .parseFailed:
@@ -58,6 +61,7 @@ enum KeychainTokenProvider {
         // Ein Deny (z. B. errSecAuthFailed) hat Vorrang vor einem NotFound des
         // zweiten Service-Namens — sonst entsteht eine irreführende Meldung.
         var deniedStatus: OSStatus?
+        var canceledStatus: OSStatus?
         for service in serviceNames {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -85,10 +89,23 @@ enum KeychainTokenProvider {
             if !allowUI {
                 throw TokenError.interactionRequired
             }
-            deniedStatus = status
+            // UI war erlaubt, der Zugriff klappte trotzdem nicht. Nur ein echtes
+            // „Deny" (errSecAuthFailed) soll die Abfrage später abschalten; ein
+            // abgebrochener Dialog (errSecUserCanceled, etwa Escape) oder ein
+            // transienter Keychain-Fehler darf das NICHT — sonst deaktiviert ein
+            // versehentliches Abbrechen die ganze Funktion. Beides als „erneut
+            // verbinden" behandeln.
+            if status == errSecAuthFailed {
+                deniedStatus = status
+            } else {
+                canceledStatus = status
+            }
         }
         if let deniedStatus {
             throw TokenError.accessDenied(deniedStatus)
+        }
+        if let canceledStatus {
+            throw TokenError.canceled(canceledStatus)
         }
         throw TokenError.notFound
     }

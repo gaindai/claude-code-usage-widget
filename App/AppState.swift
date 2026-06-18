@@ -65,13 +65,33 @@ final class AppState: ObservableObject {
     /// damit das Widget die neue Farbe beim nächsten Render liest.
     func setAccent(_ accent: WidgetAccent) {
         self.accent = accent
-        Task { await refresh(force: true) }
+        // force, damit die neue Farbe auch bei laufendem Refresh sofort in den
+        // Snapshot geschrieben wird — aber allowUI:false, damit eine rein
+        // kosmetische Aktion NIE den Keychain-Dialog auslöst (bei zurückgesetzter
+        // Freigabe still in den ruhigen „Reconnect"-Zustand statt zu prompten).
+        Task { await refresh(force: true, allowUI: false) }
     }
 
     func start() {
         guard !started else { return }
         started = true
         snapshot = SnapshotLocation.read()
+        // Persistierte Werte als Startzustand übernehmen: ohne dies bleibt
+        // cachedRateLimits beim Start nil, und ein fehlgeschlagener erster Fetch
+        // (vom Token-Refresh zurückgesetzte Keychain-Freigabe oder kurzer
+        // Netzfehler) würde die zuletzt gültigen Limits SOFORT aus Snapshot UND
+        // Widget löschen. Die TTL-Prüfung in performRefresh verwirft sie weiterhin,
+        // sobald sie echt veraltet sind; lastRefresh macht den Header-Zeitstempel
+        // sofort ehrlich.
+        if let persisted = snapshot {
+            lastRefresh = persisted.generatedAt
+            if let rl = persisted.rateLimits,
+               Date().timeIntervalSince(rl.fetchedAt) <= Self.rateLimitTTL {
+                cachedRateLimits = rl
+                lastRateLimitFetch = rl.fetchedAt
+                pace.record(percent: rl.fiveHourPercent, at: rl.fetchedAt)
+            }
+        }
         checkWidgetPlaced()
 
         // Selbstheilung: Ad-hoc-Signaturen ändern sich mit jedem Build, was die
@@ -111,10 +131,27 @@ final class AppState: ObservableObject {
             rateLimitsEnabled = true
             rateLimitNeedsReconnect = false
             await refresh(force: true)
-        } catch {
+        } catch let error as KeychainTokenProvider.TokenError {
+            // Nur eine echte Verweigerung schaltet die Funktion ab. Ein
+            // abgebrochener Dialog (.canceled) darf das NICHT — sonst kostet ein
+            // versehentliches Abbrechen beim „Reconnect" die ganze Abfrage und
+            // verlangt ein erneutes Aktivieren über die Einstellungen.
             rateLimitError = error.localizedDescription
             keychainConnected = false
-            rateLimitsEnabled = false
+            switch error {
+            case .accessDenied:
+                rateLimitsEnabled = false
+            case .canceled, .interactionRequired:
+                rateLimitNeedsReconnect = true
+            default:
+                break
+            }
+        } catch {
+            // Keychain-Lesen klappte, aber Netzwerk/HTTP/Decode schlug (transient)
+            // fehl — Funktion aktiviert lassen, damit der Hintergrund-Fetch sich
+            // von selbst erholt, statt sie wegen eines Timeouts abzuschalten.
+            rateLimitError = error.localizedDescription
+            keychainConnected = true
         }
     }
 
@@ -124,6 +161,7 @@ final class AppState: ObservableObject {
         pace = UsagePace()
         keychainConnected = false
         rateLimitError = nil
+        rateLimitNeedsReconnect = false
         Task { await refresh(force: true) }
     }
 
@@ -164,18 +202,22 @@ final class AppState: ObservableObject {
 
     /// Refresh-Läufe sind serialisiert: ein laufender Lauf wird abgewartet;
     /// nur force startet danach einen weiteren (z. B. Refresh-Button).
-    func refresh(force: Bool = false) async {
+    func refresh(force: Bool = false, allowUI: Bool? = nil) async {
         if let running = currentRefresh {
             await running.value
             if !force { return }
         }
-        let task = Task { await self.performRefresh(force: force) }
+        // allowUI default = force: der explizite Refresh-Button (force) darf den
+        // Keychain-Dialog zeigen, automatische Läufe (force=false) nie. setAccent
+        // entkoppelt das bewusst (force:true, allowUI:false).
+        let ui = allowUI ?? force
+        let task = Task { await self.performRefresh(force: force, allowUI: ui) }
         currentRefresh = task
         await task.value
         if currentRefresh == task { currentRefresh = nil }
     }
 
-    private func performRefresh(force: Bool) async {
+    private func performRefresh(force: Bool, allowUI: Bool) async {
         localDataAvailable = collector.localDataAvailable
         checkWidgetPlaced()
         let local = await collector.collect()
@@ -185,18 +227,23 @@ final class AppState: ObservableObject {
             let due = elapsed >= RateLimitClient.minimumPollInterval
                 || (force && elapsed >= Self.forcedPollFloor)
             if due {
-                lastRateLimitFetch = Date()
                 do {
-                    cachedRateLimits = withProjection(try await rateLimitClient.fetch(allowUI: force))
+                    cachedRateLimits = withProjection(try await rateLimitClient.fetch(allowUI: allowUI))
+                    // Erst NACH Erfolg merken: bei Fehlschlag bleibt der Floor
+                    // offen, damit ein direkt folgender manueller Refresh sofort
+                    // erneut versuchen darf, statt 30 s lang ins Leere zu laufen.
+                    lastRateLimitFetch = Date()
                     keychainConnected = true
                     rateLimitError = nil
                     rateLimitNeedsReconnect = false
                 } catch let error as KeychainTokenProvider.TokenError {
                     switch error {
-                    case .interactionRequired:
-                        // Nur automatische Fetches (allowUI=false) landen hier:
-                        // die Freigabe wurde zurückgesetzt. Still zurückziehen und
-                        // ein ruhiges „Reconnect" anbieten — KEIN Überraschungs-Dialog.
+                    case .interactionRequired, .canceled:
+                        // interactionRequired: automatischer Fetch (allowUI=false),
+                        // die Freigabe wurde zurückgesetzt. canceled: ein erlaubter
+                        // Fetch, dessen Dialog der Nutzer abgebrochen hat. Beides
+                        // still in den ruhigen „Reconnect"-Zustand — KEIN erneutes
+                        // Prompten, Funktion bleibt aktiv.
                         rateLimitNeedsReconnect = true
                     case .accessDenied:
                         // Aktiv verweigert: Abfrage deaktivieren statt alle

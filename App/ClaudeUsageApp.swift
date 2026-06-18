@@ -56,6 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+
+        // Beim Öffnen frische Daten ziehen — sonst zeigt das gerade geöffnete
+        // Fenster den Stand des letzten (ggf. lange durch App Nap verzögerten)
+        // Hintergrund-Ticks, bis man manuell aktualisiert. Wurde die Keychain-
+        // Freigabe zurückgesetzt (rateLimitNeedsReconnect), JETZT einen erlaubten
+        // Fetch anstoßen: der Dialog erscheint genau beim Öffnen — ein erwarteter
+        // Moment — statt die kleine „Reconnect"-Aktion erst suchen zu müssen.
+        // Sonst still (allowUI:false), damit ein Öffnen nie unerwartet promptet.
+        let needsReconnect = state.rateLimitsEnabled && state.rateLimitNeedsReconnect
+        Task { await state.refresh(force: needsReconnect, allowUI: needsReconnect) }
     }
 
     func windowWillClose(_ notification: Notification) {
