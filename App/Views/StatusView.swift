@@ -8,6 +8,9 @@ struct StatusView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var refreshing = false
     @State private var showSettings = false
+    /// Hält den „Fetch limits"-Schalter sichtbar an, solange Keychain-Dialog und
+    /// Fetch laufen — sonst springt er zurück auf AUS und wirkt kaputt.
+    @State private var connectingLimits = false
 
     /// Snapshot deutlich älter als App-Schreibintervall + Reload-Kadenz → die
     /// Hintergrund-App läuft vermutlich nicht mehr (gleiche Schwelle wie das Widget).
@@ -138,6 +141,17 @@ struct StatusView: View {
                         }
                         if state.rateLimitNeedsReconnect {
                             reconnectHint
+                        } else if let error = state.rateLimitError {
+                            // z. B. 401 „Token expired": Keychain-Lesen klappte,
+                            // aber der Server lehnt das Token ab — Reconnect hilft
+                            // nicht (Claude Code muss es erneuern). Daher nur ein
+                            // ruhiger Hinweis über den zuletzt bekannten Werten,
+                            // kein Reconnect-Button.
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -363,10 +377,14 @@ struct StatusView: View {
                             set: { state.setLoginItem($0) }
                         ))
                         Toggle("Fetch session/weekly limits (keychain)", isOn: Binding(
-                            get: { state.rateLimitsEnabled },
+                            get: { connectingLimits || state.rateLimitsEnabled },
                             set: { enabled in
                                 if enabled {
-                                    Task { await state.connectRateLimits() }
+                                    connectingLimits = true
+                                    Task {
+                                        await state.connectRateLimits()
+                                        connectingLimits = false
+                                    }
                                 } else {
                                     state.disconnectRateLimits()
                                 }

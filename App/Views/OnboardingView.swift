@@ -109,13 +109,18 @@ struct OnboardingView: View {
     // MARK: Step 1 — limits (the point)
 
     private var stepLimits: some View {
-        StepBox(number: 1, done: state.keychainConnected, accent: state.accent,
+        StepBox(number: 1, done: state.rateLimitsEnabled, accent: state.accent,
                 title: "Show your usage limits") {
             VStack(spacing: DS.Spacing.s) {
                 Text("The whole point: your live 5-hour window and weekly limit on the desktop, just like `/usage`. To do that the app reads the Claude Code token from the keychain — it is only ever sent to api.anthropic.com for this request and never stored or logged.")
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                if state.keychainConnected, let rl = state.snapshot?.rateLimits {
+                // Auf dauerhafte Signale stützen (persistiertes rateLimitsEnabled,
+                // tatsächliche Limits im Snapshot), NICHT auf das pro Sitzung
+                // zurückgesetzte keychainConnected — sonst zeigt ein erneut
+                // geöffnetes Onboarding direkt nach dem Start fälschlich „Connect"
+                // und löst einen unnötigen Keychain-Dialog aus.
+                if state.rateLimitsEnabled, let rl = state.snapshot?.rateLimits {
                     HStack(spacing: DS.Spacing.xxl) {
                         RingGauge(value: rl.fiveHourPercent, label: "5 H", accent: state.accent,
                                   diameter: 84, lineWidth: 9)

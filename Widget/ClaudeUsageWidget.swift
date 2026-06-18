@@ -69,7 +69,16 @@ struct SnapshotProvider: TimelineProvider {
                 entries.append(SnapshotEntry(date: staleAt, snapshot: snapshot))
             }
             if let reset = snapshot.rateLimits?.fiveHourResetsAt, reset > now {
-                entries.append(SnapshotEntry(date: reset.addingTimeInterval(1), snapshot: snapshot))
+                // Beim 5-h-Reset fällt das Fenster auf ~0 %. Eine angepasste Kopie
+                // archivieren, damit der Gauge exakt zum Reset auf 0 springt, statt
+                // den alten (hohen) Prozentwert weiterzuzeigen, bis die App neue
+                // Limits holt. Kostet keinen Reload (vorab archiviert); die
+                // Wochen-Werte bleiben unberührt — nur das 5-h-Fenster resettet hier.
+                var resetSnap = snapshot
+                resetSnap.rateLimits?.fiveHourPercent = 0
+                resetSnap.rateLimits?.fiveHourProjectedPercent = nil
+                resetSnap.rateLimits?.fiveHourResetsAt = nil
+                entries.append(SnapshotEntry(date: reset.addingTimeInterval(1), snapshot: resetSnap))
             }
         }
         entries.sort { $0.date < $1.date }
