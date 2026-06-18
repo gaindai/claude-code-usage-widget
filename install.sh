@@ -57,7 +57,13 @@ xcodegen generate >/dev/null
 #    authorization to a stable identity instead, so "Always Allow" sticks across
 #    updates. No Apple Developer account required; created once per Mac.
 CERT_NAME="Claude Usage Local Signing"
-if ! security find-certificate -c "$CERT_NAME" >/dev/null 2>&1; then
+# find-identity (deliberately WITHOUT -v): the self-signed cert is untrusted
+# (CSSMERR_TP_NOT_TRUSTED), so the -v "valid identities" listing would never show
+# it — guarding on that would recreate the cert on every install, changing the
+# signing identity each time and re-triggering the keychain prompt. The plain
+# listing requires a usable cert+private-key identity, not just a certificate, so
+# a stray cert without its key is correctly re-created instead of failing the build.
+if ! security find-identity -p codesigning 2>/dev/null | grep -q "$CERT_NAME"; then
   bold "🔐 Creating a one-time local signing certificate (no Apple account needed) …"
   CWORK=$(mktemp -d)
   cat > "$CWORK/cert.cnf" <<'EOF'
@@ -95,6 +101,13 @@ if ! /usr/bin/xcrun xcodebuild -project ClaudeUsage.xcodeproj -scheme ClaudeUsag
   if grep -qE 'runFirstLaunch|CoreSimulator|DVTPlugInLoading' "$BUILD_LOG"; then
     echo ""
     xcode_repair_hint
+  elif grep -qE 'errSecInternalComponent|Could not sign|User interaction is not allowed|errSecInteractionNotAllowed' "$BUILD_LOG"; then
+    echo ""
+    bold "❌ Code signing failed."
+    echo "   macOS couldn't use the local signing key. If a keychain password"
+    echo "   dialog appeared and was dismissed, re-run ./install.sh and choose"
+    echo "   \"Always Allow\". Running from a headless/SSH session? Run the install"
+    echo "   from a logged-in graphical session so the keychain can be unlocked."
   fi
   rm -f "$BUILD_LOG"
   exit 1
