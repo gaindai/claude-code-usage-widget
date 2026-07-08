@@ -5,9 +5,9 @@ import SwiftUI
 /// kompiliert diese Datei nicht und bleibt damit unverändert.
 ///
 /// Die Marke lebt im Gradient: gaind-Signet Cyan → Blue → Purple → Magenta.
-/// Eine einzige Schaltstelle (`WidgetAccent.isBrandColor`) entscheidet, ob ein
-/// voller Gradient (Markenfarben) oder eine einzelne Farbe (neutrale Akzente)
-/// gerendert wird — Ringe, Sparkline, Punkte und Wash teilen sich diese Regel.
+/// Bei Markenfarben tragen ihn Signet-Punkt und Hintergrund-Wash
+/// (`WidgetAccent.isBrandColor` → `dotStyle`); Ringe und Sparkline folgen
+/// dagegen der gewählten Einzelfarbe, damit die App parallel zum Widget umfärbt.
 enum DS {
     // MARK: Farben
     static let cyan = Color(accentHex: 0x6EAAF0)
@@ -48,44 +48,32 @@ enum DS {
     }
 }
 
-// MARK: - Akzent-Bridge: brand-vs-neutral an EINER Stelle
+// MARK: - Akzent-Bridge
 
 extension WidgetAccent {
-    /// Voller Signet-Gradient bei Markenfarben, sonst die einzelne Farbe.
-    private var stops: Gradient {
-        isBrandColor ? DS.gaindGradient : Gradient(colors: [color, color])
-    }
+    /// Ring-Füllung (der tatsächliche Verbrauch) — die gewählte Einzelfarbe,
+    /// damit die App-Ringe parallel zum Widget umfärben (das Widget tint't seine
+    /// Gauges ebenfalls mit `color`).
+    var ringFillStyle: AnyShapeStyle { AnyShapeStyle(color) }
 
-    /// Ring-Füllung (der tatsächliche Verbrauch).
-    var ringFillStyle: AnyShapeStyle {
-        isBrandColor
-            ? AnyShapeStyle(AngularGradient(gradient: stops, center: .center))
-            : AnyShapeStyle(color)
-    }
+    /// Ring-Spur — dieselbe Farbe, nur gespenstisch leise, damit die Füllung
+    /// selbst bei wenigen Prozent auf einer sichtbaren Bahn liegt.
+    var ringTrackStyle: AnyShapeStyle { AnyShapeStyle(color.opacity(0.16)) }
 
-    /// Ring-Spur — immer der VOLLE Gradient, nur gespenstisch leise. So ist die
-    /// Marke selbst bei 2 % Füllung sichtbar.
-    var ringTrackStyle: AnyShapeStyle {
-        isBrandColor
-            ? AnyShapeStyle(AngularGradient(gradient: stops, center: .center).opacity(0.18))
-            : AnyShapeStyle(color.opacity(0.16))
-    }
-
-    /// Diagonal-Gradient für Hero-Zahl, Punkte, Picker-Swatches.
+    /// Signet-Punkt + Wash tragen die Marke: voller Signet-Gradient bei
+    /// Markenfarben, sonst die einzelne Farbe. Bewusst NUR hier — Ringe und
+    /// Sparkline folgen der gewählten Farbe, nicht dem Gradienten.
     var dotStyle: AnyShapeStyle {
         isBrandColor ? AnyShapeStyle(DS.gaindLinear) : AnyShapeStyle(color)
     }
 
-    /// Linienfarbe der Sparkline (kräftig, einfarbig für Schärfe).
-    var lineColor: Color {
-        isBrandColor ? DS.purple : color
-    }
+    /// Linienfarbe der Sparkline — die gewählte Farbe (kräftig, einfarbig).
+    var lineColor: Color { color }
 
     /// Flächenfüllung unter der Sparkline — vertikal nach unten ausblendend.
     var areaStyle: AnyShapeStyle {
-        let top = isBrandColor ? DS.purple : color
-        return AnyShapeStyle(
-            LinearGradient(colors: [top.opacity(0.35), top.opacity(0.04)],
+        AnyShapeStyle(
+            LinearGradient(colors: [color.opacity(0.35), color.opacity(0.04)],
                            startPoint: .top, endPoint: .bottom)
         )
     }

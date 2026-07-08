@@ -61,15 +61,26 @@ final class AppState: ObservableObject {
         localDataAvailable = collector.localDataAvailable
     }
 
-    /// Akzentfarbe wählen: persistieren und sofort in den Snapshot schreiben,
-    /// damit das Widget die neue Farbe beim nächsten Render liest.
+    /// Akzentfarbe wählen: den vorhandenen Snapshot sofort mit der neuen Farbe neu
+    /// schreiben und das Widget direkt neu laden — ohne Netzwerk-Fetch und ohne
+    /// Keychain-Zugriff. Der frühere Weg über refresh(force:) wartete erst den (bis
+    /// zu 20 s langen) Limits-Fetch ab, bevor Snapshot geschrieben und Widget neu
+    /// geladen wurde — die Farbe erschien dadurch spürbar verzögert. Ohne bereits
+    /// vorhandenen Snapshot (ganz frische Installation) übernimmt der normale
+    /// stille Refresh.
     func setAccent(_ accent: WidgetAccent) {
         self.accent = accent
-        // force, damit die neue Farbe auch bei laufendem Refresh sofort in den
-        // Snapshot geschrieben wird — aber allowUI:false, damit eine rein
-        // kosmetische Aktion NIE den Keychain-Dialog auslöst (bei zurückgesetzter
-        // Freigabe still in den ruhigen „Reconnect"-Zustand statt zu prompten).
-        Task { await refresh(force: true, allowUI: false) }
+        guard var snap = snapshot else {
+            Task { await refresh(force: true, allowUI: false) }
+            return
+        }
+        snap.accent = accent
+        snapshot = snap
+        try? SnapshotStore.write(snap)
+        // Dedup-Fingerprint mitziehen, sonst löst der nächste Hintergrund-Refresh
+        // einen überflüssigen zweiten Reload aus (Reload-Budget schonen).
+        lastWidgetFingerprint = Self.widgetFingerprint(snap)
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     func start() {
