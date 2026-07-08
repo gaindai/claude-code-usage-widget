@@ -59,13 +59,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Beim Öffnen frische Daten ziehen — sonst zeigt das gerade geöffnete
         // Fenster den Stand des letzten (ggf. lange durch App Nap verzögerten)
-        // Hintergrund-Ticks, bis man manuell aktualisiert. Wurde die Keychain-
-        // Freigabe zurückgesetzt (rateLimitNeedsReconnect), JETZT einen erlaubten
-        // Fetch anstoßen: der Dialog erscheint genau beim Öffnen — ein erwarteter
-        // Moment — statt die kleine „Reconnect"-Aktion erst suchen zu müssen.
-        // Sonst still (allowUI:false), damit ein Öffnen nie unerwartet promptet.
-        let needsReconnect = state.rateLimitsEnabled && state.rateLimitNeedsReconnect
-        Task { await state.refresh(force: needsReconnect, allowUI: needsReconnect) }
+        // Hintergrund-Ticks. Immer still (allowUI:false): ein Öffnen darf NIE einen
+        // Passwort-Dialog auslösen. Ist die Keychain-Freigabe noch gültig, holt der
+        // stille Fetch frische Limits ohne Dialog; wurde sie (durch Claude Codes
+        // Token-Refresh) zurückgesetzt, bleibt es beim ruhigen „Reconnect"-Hinweis,
+        // den man bei Bedarf selbst antippt. Ein proaktiver Prompt beim Öffnen
+        // brächte nichts Dauerhaftes — „Immer erlauben" hält nicht, weil Claude
+        // Code das Keychain-Item beim nächsten Refresh ohnehin neu anlegt.
+        Task { await state.refresh(force: true, allowUI: false) }
     }
 
     func windowWillClose(_ notification: Notification) {
